@@ -3,6 +3,12 @@
 ## Description
 A very simple GZIP in-memory decompressor library with a one-function API.
 
+```c
+int gzdec(
+    void *in, unsigned int insize,
+    void **out, unsigned int *outsize);
+```
+
 ## Usage
 ```c
 void *in, *out;
