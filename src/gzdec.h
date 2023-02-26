@@ -13,7 +13,9 @@
  *    unsigned int insize, outsize;
  *    int result;
  *    void *in = read_entire_file("myfile.bin.gz", &insize);
- *    result = gzdec(in, insize, &out, &outsize);
+ *    outsize = gzdecsize(in, insize);
+ *    out = malloc(outsize);
+ *    result = gzdec(in, insize, out, outsize);
  *    if(result == GZ_OK)
  *    {
  *      write_entire_file("myfile.bin", out, outsize);
@@ -35,36 +37,16 @@ enum gz_result
     GZ_OK,
     GZ_INVMAGIC,
     GZ_INVCMETHOD,
-    GZ_INVFILE
+    GZ_INVFILE,
+    GZ_NOSPACE
 };
 
-int gzdec(
-    void *in, unsigned int insize,
-    void **out, unsigned int *outsize);
+unsigned int gzdecsize(void *in, unsigned int insize);
+int gzdec(void *in, unsigned int insize, void *out, unsigned int outsize);
 
 #ifdef GZDEC_IMPLEMENTATION
 #ifndef GZDEC_IMPLEMENTED
 #define GZDEC_IMPLEMENTED
-
-#ifndef gz_malloc
-#include <stdlib.h>
-#define gz_malloc malloc
-#endif
-
-#ifndef gz_mfree
-#include <stdlib.h>
-#define gz_mfree free
-#endif
-
-#ifndef gz_memset
-#include <string.h>
-#define gz_memset memset
-#endif
-
-#ifndef gz_realloc
-#include <stdlib.h>
-#define gz_realloc realloc
-#endif
 
 typedef struct
 gz_bstream
@@ -130,6 +112,21 @@ gz_readbits(gz_bstream *stream, int count)
     }
 
     return(bitsval);
+}
+
+void
+gz_memset(void *dst, int val, unsigned int count)
+{
+    unsigned char *p;
+    unsigned int i;
+
+    p = (unsigned char *)dst;
+    for(i = 0;
+        i < count;
+        ++i)
+    {
+        *p++ = (unsigned char)(val & 0xff);
+    }
 }
 
 int
@@ -209,8 +206,24 @@ gz_torange(
     return(j + 1);
 }
 
-gz_huffn *
-gz_buildht(unsigned int *cl, unsigned int count)
+#define GZ_LL_MAX 288
+#define GZ_DIST_MAX 32
+#define GZ_CLEN_MAX 19
+
+#define GZ_RANGE_MAX GZ_LL_MAX
+#define GZ_BL_COUNT_MAX 30
+#define GZ_NXTCODE_MAX GZ_BL_COUNT_MAX
+#define GZ_TREE_MAX GZ_LL_MAX
+
+gz_range gz_range_[GZ_RANGE_MAX];
+int gz_blcount_[GZ_BL_COUNT_MAX];
+int gz_nxtcode_[GZ_NXTCODE_MAX];
+gz_tnode gz_tree_[GZ_TREE_MAX];
+
+int
+gz_buildht(
+    unsigned int *cl, unsigned int count,
+    gz_huffn *ht, unsigned int htmax)
 {
     int *blcount, *nxtcode;
     gz_tnode *tree;
@@ -219,18 +232,18 @@ gz_buildht(unsigned int *cl, unsigned int count)
     gz_range *range;
     unsigned int maxblen, actrange;
     int rcount;
-    unsigned int huffmax, huffcount;
-    gz_huffn *ht, *node;
+    unsigned int huffcount;
+    gz_huffn *node;
 
-    range = gz_malloc(sizeof(gz_range) * count);
-    if(!range)
+    if(count > GZ_LL_MAX)
     {
         return(0);
     }
+
+    range = gz_range_;
     rcount = gz_torange(cl, count, range, count);
     if(rcount < 0)
     {
-        gz_mfree(range);
         return(0);
     }
 
@@ -245,15 +258,26 @@ gz_buildht(unsigned int *cl, unsigned int count)
         }
     }
 
-    blcount = gz_malloc(sizeof(int) * (maxblen + 1));
-    nxtcode = gz_malloc(sizeof(int) * (maxblen + 1));
-    tree = gz_malloc(sizeof(gz_tnode) * (range[rcount - 1].end + 1));
+    if(maxblen + 1 > GZ_BL_COUNT_MAX)
+    {
+        return(0);
+    }
+    blcount = gz_blcount_;
+
+    if(maxblen + 1 > GZ_NXTCODE_MAX)
+    {
+        return(0);
+    }
+    nxtcode = gz_nxtcode_;
+
+    if(range[rcount - 1].end + 1 > GZ_TREE_MAX)
+    {
+        return(0);
+    }
+    tree = gz_tree_;
+
     if(!blcount || !nxtcode || !tree)
     {
-        gz_mfree(range);
-        gz_mfree(blcount);
-        gz_mfree(nxtcode);
-        gz_mfree(tree);
         return(0);
     }
 
@@ -302,38 +326,14 @@ gz_buildht(unsigned int *cl, unsigned int count)
     }
 
     /* Get number of huffman nodes */
-    huffmax = 1;
-    for(i = 0;
-        i <= range[rcount - 1].end;
-        ++i)
-    {
-        if(tree[i].blen > 0)
-        {
-            huffmax += tree[i].blen;
-        }
-    }
-
-    ht = gz_malloc(sizeof(gz_huffn) * huffmax);
     if(!ht)
     {
-        gz_mfree(range);
-        gz_mfree(blcount);
-        gz_mfree(nxtcode);
-        gz_mfree(tree);
         return(0);
     }
-    gz_memset(ht, 0, sizeof(gz_huffn) * huffmax); 
-    huffcount = 0;
 
-    if(huffcount >= huffmax)
-    {
-        gz_mfree(range);
-        gz_mfree(blcount);
-        gz_mfree(nxtcode);
-        gz_mfree(tree);
-        gz_mfree(ht);
-        return(0);
-    }
+    gz_memset(ht, 0, sizeof(gz_huffn) * htmax); 
+
+    huffcount = 0;
     node = &(ht[huffcount++]);
     node->code = -1;
     for(i = 0;
@@ -352,13 +352,8 @@ gz_buildht(unsigned int *cl, unsigned int count)
                 {
                     if(!node->one)
                     {
-                        if(huffcount >= huffmax)
+                        if(huffcount >= htmax)
                         {
-                            gz_mfree(range);
-                            gz_mfree(blcount);
-                            gz_mfree(nxtcode);
-                            gz_mfree(tree);
-                            gz_mfree(ht);
                             return(0);
                         }
                         node->one = &(ht[huffcount++]);
@@ -370,13 +365,8 @@ gz_buildht(unsigned int *cl, unsigned int count)
                 {
                     if(!node->zero)
                     {
-                        if(huffcount >= huffmax)
+                        if(huffcount >= htmax)
                         {
-                            gz_mfree(range);
-                            gz_mfree(blcount);
-                            gz_mfree(nxtcode);
-                            gz_mfree(tree);
-                            gz_mfree(ht);
                             return(0);
                         }
                         node->zero = &(ht[huffcount++]);
@@ -387,38 +377,24 @@ gz_buildht(unsigned int *cl, unsigned int count)
             }
             if(node->code != -1)
             {
-                gz_mfree(range);
-                gz_mfree(blcount);
-                gz_mfree(nxtcode);
-                gz_mfree(tree);
-                gz_mfree(ht);
                 return(0);
             }
             node->code = i;
         }
     }
 
-    gz_mfree(range);
-    gz_mfree(blcount);
-    gz_mfree(nxtcode);
-    gz_mfree(tree);
-
-    return(ht);
+    return(1);
 }
 
-void
-gz_rmht(gz_huffn *ht)
-{
-    gz_mfree(ht);
-}
-
-gz_huffn *
+int
 gz_gethufft(
     gz_bstream *stream,
     unsigned int *lengths,
     unsigned int count,
     unsigned int maxcount,
-    gz_huffn *htclen)
+    gz_huffn *htclen,
+    gz_huffn *ht,
+    unsigned int htmax)
 {
     unsigned int i, val, rep;
     int sym;
@@ -481,7 +457,7 @@ gz_gethufft(
         return(0);
     }
 
-    return(gz_buildht(lengths, maxcount));
+    return(gz_buildht(lengths, maxcount, ht, htmax));
 }
 
 /**
@@ -573,95 +549,36 @@ gz_getdist(int code, gz_bstream *stream)
     return(extra + gz_disttable[code - 4] + 1);
 }
 
-typedef struct
-gz_outstream
-{
-    unsigned char *out;
-    unsigned int len;
-    unsigned int cap;
-} gz_outstream;
+#define GZ_HTLL_MAX ((GZ_LL_MAX)*2 - 1)
+#define GZ_HTDIST_MAX ((GZ_DIST_MAX)*2 - 1)
+#define GZ_HTCLEN_MAX ((GZ_CLEN_MAX)*2 - 1)
 
-void
-gz_sfit(gz_outstream *stream, unsigned int newcap)
-{
-    if(stream->cap == 0 && newcap > 0)
-    {
-        stream->out = gz_malloc(sizeof(unsigned char)*newcap);
-        if(stream->out)
-        {
-            stream->cap = newcap;
-        }
-    }
-    else if(newcap > stream->cap)
-    {
-        stream->out = gz_realloc(stream->out, sizeof(unsigned char)*newcap);
-        if(stream->out)
-        {
-            stream->cap = newcap;
-        }
-    }
-}
-
-int
-gz_emitb(gz_outstream *stream, unsigned char b)
-{
-    unsigned int newcap;
-
-    newcap = stream->cap;
-    while(stream->len + 1 >= newcap)
-    {
-        newcap = newcap*2 + 1;
-    }
-
-    gz_sfit(stream, newcap);
-    if(!stream->out)
-    {
-        return(0);
-    }
-
-    stream->out[stream->len++] = b;
-
-    return(1);
-}
-
-void
-gz_sadj(gz_outstream *stream, unsigned int size)
-{
-    if(stream && stream->out)
-    {
-        if(stream->cap != size)
-        {
-            stream->out = gz_realloc(
-                stream->out, sizeof(unsigned char)*size);
-            if(stream->out)
-            {
-                stream->cap = size;
-            }
-        }
-    }
-}
+gz_huffn gz_htll_[GZ_HTLL_MAX];
+gz_huffn gz_htdist_[GZ_HTDIST_MAX];
+gz_huffn gz_htclen_[GZ_HTCLEN_MAX];
 
 int
 gzdec(
     void *in, unsigned int insize,
-    void **out, unsigned int *outsize)
+    void *out, unsigned int outsize)
 {
 #define FTEXT 0x01
 #define FHCRC 0x02
 #define FEXTRA 0x04
 #define FNAME 0x08
 #define FCOMMENT 0x10
-#define MAXCLEN 19
-#define LLLEN 288
-#define DISTLEN 32
+#define MAXCLEN GZ_CLEN_MAX
+#define LLLEN GZ_LL_MAX
+#define DISTLEN GZ_DIST_MAX
 
-#define FREEALL()\
-    if(htclen) { gz_rmht(htclen); htclen = 0; }\
-    if(htll) { gz_rmht(htll); htll = 0; }\
-    if(htdist) { gz_rmht(htdist); htdist = 0; }
+#define EMIT(b)\
+    if(outp >= outend)\
+    {\
+        return(GZ_INVFILE);\
+    }\
+    *outp++ = (unsigned char)((b) & 0xff);
 
     gz_bstream ins = {0};
-    gz_outstream outs = {0};
     unsigned char magic[2];
     unsigned int cm, flags, xlen;
     unsigned int islast, btype;
@@ -676,11 +593,36 @@ gzdec(
     unsigned int clenord[MAXCLEN] = {
         16,17,18,0,8,7,9,6,10,5,11,4,12,3,13,2,14,1,15
     };
-    gz_huffn *htclen = 0;
+    gz_huffn *htclen;
 
     unsigned int arrll[LLLEN] = {0};
     unsigned int arrdist[DISTLEN] = {0};
-    gz_huffn *htll = 0, *htdist = 0;
+    gz_huffn *htll, *htdist;
+
+    unsigned char *outp, *outend, *backp;
+
+    outp = (unsigned char *)out;
+    outend = outp + outsize;
+
+    if(!in || insize < 18)
+    {
+        return(GZ_INVFILE);
+    }
+
+    i = gzdecsize(in, insize);
+    if(i == 0)
+    {
+        return(GZ_INVFILE);
+    }
+
+    if(outsize < i)
+    {
+        return(GZ_NOSPACE);
+    }
+
+    htll = gz_htll_;
+    htdist = gz_htdist_;
+    htclen = gz_htclen_;
 
     ins.mask = 1;
     ins.src = (unsigned char *)in;
@@ -755,15 +697,14 @@ gzdec(
             /* Emit literals */
             b0len = gz_readbits(&ins, 8);
             b0nlen = gz_readbits(&ins, 8);
-            if(b0len != -b0nlen)
+            if(b0len != ~b0nlen)
             {
-                FREEALL();
                 return(GZ_INVFILE);
             }
 
             while(b0len > 0)
             {
-                gz_emitb(&outs, gz_readbits(&ins, 8));
+                EMIT(gz_readbits(&ins, 8));
                 --b0len;
             }
         }
@@ -805,11 +746,13 @@ gzdec(
                 arrdist[i] = 5;
             }
 
-            htll = gz_buildht(arrll, LLLEN);
-            htdist = gz_buildht(arrdist, DISTLEN);
-            if(!htll || !htdist)
+            if(!gz_buildht(arrll, LLLEN, htll, GZ_HTLL_MAX))
             {
-                FREEALL();
+                return(GZ_INVFILE);
+            }
+
+            if(!gz_buildht(arrdist, DISTLEN, htdist, GZ_HTDIST_MAX))
+            {
                 return(GZ_INVFILE);
             }
 
@@ -824,7 +767,6 @@ gzdec(
 
             if(257 + hlit > LLLEN)
             {
-                FREEALL();
                 return(GZ_INVFILE);
             }
 
@@ -836,26 +778,24 @@ gzdec(
                 arrclen[clenord[i]] = gz_readbits(&ins, 3);
             }
 
-            htclen = gz_buildht(arrclen, MAXCLEN);
-            if(!htclen)
+            if(!gz_buildht(arrclen, MAXCLEN, htclen, GZ_HTCLEN_MAX))
             {
-                FREEALL();
                 return(GZ_INVFILE);
             }
 
-            htll = gz_gethufft(
-                &ins, arrll, 257 + hlit, LLLEN, htclen);
-            if(!htll)
+            if(!gz_gethufft(
+                &ins, arrll, 257 + hlit,
+                LLLEN, htclen,
+                htll, GZ_HTLL_MAX))
             {
-                FREEALL();
                 return(GZ_INVFILE);
             }
 
-            htdist = gz_gethufft(
-                &ins, arrdist, 1 + hdist, DISTLEN, htclen);
-            if(!htdist)
+            if(!gz_gethufft(
+                &ins, arrdist, 1 + hdist,
+                DISTLEN, htclen,
+                htdist, GZ_HTDIST_MAX))
             {
-                FREEALL();
                 return(GZ_INVFILE);
             }
 
@@ -863,7 +803,6 @@ gzdec(
         }
         else
         {
-            FREEALL();
             return(GZ_INVFILE);
         }
 
@@ -874,13 +813,12 @@ gzdec(
             {
                 if(sym < 0 || sym > LLLEN)
                 {
-                    FREEALL();
                     return(GZ_INVFILE);
                 }
 
                 if(sym >= 0 && sym <= 255)
                 {
-                    gz_emitb(&outs, (unsigned char)(sym & 0xff));
+                    EMIT(sym);
                 }
                 else if(sym == 256)
                 {
@@ -888,62 +826,42 @@ gzdec(
                 }
                 else if(sym < LLLEN)
                 {
-                    unsigned char *p;
-
                     len = gz_getlen(sym, &ins);
                     dist = gz_huffdec(&ins, htdist);
                     dist = gz_getdist(dist, &ins);
 
                     if(dist < 0 || len <= 0)
                     {
-                        FREEALL();
                         return(GZ_INVFILE);
                     }
 
-                    gz_sfit(&outs, outs.len + dist + 1);
-                    p = outs.out + outs.len - dist;
-                    if((unsigned int)dist > outs.len)
+                    backp = outp - dist;
+                    if(outp < (unsigned char *)out)
                     {
-                        FREEALL();
                         return(GZ_INVFILE);
                     }
 
                     while(len > 0)
                     {
-                        gz_emitb(&outs, *p);
-                        ++p;
+                        EMIT(*backp);
+                        ++backp;
                         len -= 1;
                     }
                 }
                 else
                 {
-                    FREEALL();
                     return(GZ_INVFILE);
                 }
 
                 sym = gz_huffdec(&ins, htll);
             }
         }
-
-        FREEALL();
     }
 
-    FREEALL();
-
-    gz_sadj(&outs, outs.len);
-    if(outsize)
-    {
-        *outsize = outs.len;
-    }
-
-    if(out)
-    {
-        *out = outs.out;
-    }
 
     return(GZ_OK);
 
-#undef FREEALL
+#undef EMIT
 #undef DISTCLEN
 #undef LLCLEN
 #undef MAXCLEN
@@ -952,6 +870,27 @@ gzdec(
 #undef FEXTRA
 #undef FNAME
 #undef FCOMMENT
+}
+
+unsigned int
+gzdecsize(void *in, unsigned int insize)
+{
+    unsigned int decsize;
+    unsigned char *inp;
+
+    if(!in || insize < 18)
+    {
+        return(0);
+    }
+
+    decsize = 0;
+    inp = (unsigned char *)in + insize - 4;
+    decsize |= (unsigned int)*inp++;
+    decsize |= ((unsigned int)*inp++) << 8;
+    decsize |= ((unsigned int)*inp++) << 16;
+    decsize |= ((unsigned int)*inp++) << 24;
+
+    return(decsize);
 }
 
 #endif
