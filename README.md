@@ -1,4 +1,4 @@
-# GZIP in-memory decompressor
+# GZIP in-memory decompressor library
 
 ## Description
 A very simple GZIP in-memory decompressor library with a 2-functions API.
@@ -9,21 +9,28 @@ int gzdec(void *in, unsigned int insize, void *out, unsigned int outsize);
 ```
 
 ## Usage
+1. Define ```GZDEC_IMPLEMENTATION``` and then include the library:
+```c
+#define GZDEC_IMPLEMENTATION
+#include "gzdec.h"
+```
+
+2. Use it:
 ```c
 void *in, *out;
 unsigned int insize, outsize;
 int result;
 
-void *in = read_entire_file("myfile.bin.gz", &insize);
+in = read_entire_file("myfile.bin.gz", &insize);
 outsize = gzdecsize(in, insize);
 out = malloc(outsize);
 result = gzdec(in, insize, out, outsize);
 if(result == GZ_OK)
 {
-  write_entire_file("myfile.bin", out, outsize);
+    write_entire_file("myfile.bin", out, outsize);
 }
 else
 {
-  printf("Cannot decompress file");
+    printf("Cannot decompress file");
 }
 ```

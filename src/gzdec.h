@@ -1,33 +1,42 @@
 /**
- * GZIP decompressor
- * This can be useful to decompress at run-time in memory.
- *
- * Resources:
- * [1] https://commandlinefanatic.com/cgi-bin/showarticle.cgi?article=art001
- * [2] https://www.ietf.org/rfc/rfc1951.txt
- * [3] https://www.ietf.org/rfc/rfc1952.txt
- *
- * Usage:
- *
- *    void *in, *out;
- *    unsigned int insize, outsize;
- *    int result;
- *    void *in = read_entire_file("myfile.bin.gz", &insize);
- *    outsize = gzdecsize(in, insize);
- *    out = malloc(outsize);
- *    result = gzdec(in, insize, out, outsize);
- *    if(result == GZ_OK)
- *    {
- *      write_entire_file("myfile.bin", out, outsize);
- *    }
- *    else
- *    {
- *      printf("Cannot decompress file");
- *    }
- *
- * TODO:
- * [ ] Test BTYPE=00 and BTYPE=01
- */
+# GZIP in-memory decompressor library
+
+A very simple GZIP in-memory decompressor library with a 2-functions API.
+
+Resources:
+[1] https://commandlinefanatic.com/cgi-bin/showarticle.cgi?article=art001
+[2] https://www.ietf.org/rfc/rfc1951.txt
+[3] https://www.ietf.org/rfc/rfc1952.txt
+
+Usage:
+
+1. Include this library:
+
+#define GZDEC_IMPLEMENTATION
+#include "gzdec.h"
+
+2. And then use it:
+
+void *in, *out;
+unsigned int insize, outsize;
+int result;
+
+in = read_entire_file("myfile.bin.gz", &insize);
+outsize = gzdecsize(in, insize);
+out = malloc(outsize);
+result = gzdec(in, insize, out, outsize);
+if(result == GZ_OK)
+{
+    write_entire_file("myfile.bin", out, outsize);
+}
+else
+{
+    printf("Cannot decompress file");
+}
+
+TODO:
+[ ] Test BTYPE=00 and BTYPE=01
+*/
 
 #ifndef GZDEC_H
 #define GZDEC_H
@@ -892,6 +901,17 @@ gzdecsize(void *in, unsigned int insize)
 
     return(decsize);
 }
+
+#undef GZ_HTLL_MAX
+#undef GZ_HTDIST_MAX
+#undef GZ_HTCLEN_MAX
+#undef GZ_LL_MAX
+#undef GZ_DIST_MAX
+#undef GZ_CLEN_MAX
+#undef GZ_RANGE_MAX
+#undef GZ_BL_COUNT_MAX
+#undef GZ_NXTCODE_MA
+#undef GZ_TREE_MAX
 
 #endif
 #endif
